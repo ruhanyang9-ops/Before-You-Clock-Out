@@ -1,0 +1,15 @@
+{
+  "name": "afterwork-five-minutes",
+  "version": "0.1.0",
+  "private": true,
+  "description": "下班前五分钟：本地 SQLite + Node API 的工作记录与总结助手 MVP。",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "check": "node --check server.js && node --check aiService.js && node --check speechService.js && node --check app.js",
+    "backup": "node scripts/backup-sqlite.js"
+  }
+}
