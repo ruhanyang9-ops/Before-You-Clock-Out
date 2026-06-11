@@ -5,11 +5,16 @@ node_modules/
 .env
 .env.*
 !.env.example
+!.env.production.example
 
 # Runtime data and local backups
 data/*.sqlite
 data/*.sqlite-shm
 data/*.sqlite-wal
+data/auth.sqlite
+data/auth.sqlite-shm
+data/auth.sqlite-wal
+data/users/
 backups/
 
 # Logs

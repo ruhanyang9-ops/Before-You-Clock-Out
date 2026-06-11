@@ -15,11 +15,13 @@ const DEFAULT_MODEL = "deepseek-v4-flash";
 const DEFAULT_TIMEOUT_MS = 12000;
 
 function getAIConfig() {
-  const apiKey = process.env.DEEPSEEK_API_KEY || "";
+  const provider = process.env.AI_PROVIDER || "deepseek";
+  const apiKey = process.env.AI_API_KEY || process.env.DEEPSEEK_API_KEY || "";
   const baseUrl = (process.env.AI_BASE_URL || DEFAULT_BASE_URL).replace(/\/+$/, "");
   const model = process.env.AI_MODEL || DEFAULT_MODEL;
   const timeoutMs = Number(process.env.AI_TIMEOUT_MS || DEFAULT_TIMEOUT_MS);
   return {
+    provider,
     apiKey,
     baseUrl,
     model,
@@ -31,7 +33,7 @@ function getAIStatus() {
   const config = getAIConfig();
   return {
     enabled: Boolean(config.apiKey),
-    provider: "deepseek",
+    provider: config.provider,
     model: config.model,
     baseUrlHost: safeHost(config.baseUrl),
     mode: config.apiKey ? "real" : "mock"
@@ -40,7 +42,7 @@ function getAIStatus() {
 
 async function testAIConnection() {
   if (!getAIConfig().apiKey) {
-    return { ok: false, mode: "mock", error: "DEEPSEEK_API_KEY 未配置" };
+    return { ok: false, mode: "mock", error: "AI_API_KEY/DEEPSEEK_API_KEY 未配置" };
   }
   try {
     const content = await callDeepSeek(buildParseMessages("今天完成 AI 连接测试，明天继续验证日报生成。", {}), {
@@ -130,7 +132,7 @@ async function parseWorkRecordWithMeta(rawInput, preference = {}, existingRecord
   if (!getAIConfig().apiKey) {
     return {
       record: parseWorkRecord(rawInput, preference, existingRecord),
-      _meta: { aiMode: "mock", fallbackReason: "DEEPSEEK_API_KEY 未配置" }
+      _meta: { aiMode: "mock", fallbackReason: "AI_API_KEY/DEEPSEEK_API_KEY 未配置" }
     };
   }
 
@@ -284,7 +286,7 @@ async function generateSummaryWithMeta(record, type, preference = {}) {
   if (!getAIConfig().apiKey) {
     return {
       content: generateSummary(record, type, preference),
-      _meta: { aiMode: "mock", fallbackReason: "DEEPSEEK_API_KEY 未配置" }
+      _meta: { aiMode: "mock", fallbackReason: "AI_API_KEY/DEEPSEEK_API_KEY 未配置" }
     };
   }
 
@@ -319,7 +321,7 @@ async function polishVoiceTextWithMeta(text, preference = {}) {
   if (!getAIConfig().apiKey) {
     return {
       text: cleaned,
-      _meta: { aiMode: "mock", fallbackReason: "DEEPSEEK_API_KEY 未配置" }
+      _meta: { aiMode: "mock", fallbackReason: "AI_API_KEY/DEEPSEEK_API_KEY 未配置" }
     };
   }
 
@@ -339,7 +341,7 @@ async function polishVoiceTextWithMeta(text, preference = {}) {
 
 async function callDeepSeek(messages, options = {}) {
   const config = getAIConfig();
-  if (!config.apiKey) throw new Error("DEEPSEEK_API_KEY 未配置");
+  if (!config.apiKey) throw new Error("AI_API_KEY/DEEPSEEK_API_KEY 未配置");
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), config.timeoutMs);

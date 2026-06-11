@@ -11,11 +11,11 @@
 - 智能整理：支持 DeepSeek 真实 AI，失败时回退本地 mock 规则。
 - 语音转文字：单次最长 3 分钟；优先浏览器内置语音识别，网络不可用时可走后端 STT；当前支持百度智能云语音识别，转写后会自动做简单润色预处理。
 - 报告生成：生成类型收敛为周报、月报；今日日报放在今日结构化记录中一键自动生成。
-- 待办管理：支持新增、编辑、删除、标记完成、筛选。
+- 待办管理：支持新增、编辑、删除、标记完成、筛选，默认聚焦未开始事项。
 - 项目归档：首页可快速创建项目；项目支持开始日期、收尾日期、关闭归档，并自动生成项目复盘。
 - 复盘与洞察：支持日期、关键词、项目筛选，查看历史结构化记录和总结，并支持删除记录或总结。
 - 个人定制：支持岗位、目标、汇报对象、输出风格、模板、关键词、协作对象配置。
-- 内测保护：可通过 `APP_ACCESS_PASSWORD` 开启访问口令。
+- 个人账号：支持邮箱 + 密码注册登录，每个用户使用独立 SQLite 数据库；首个注册账号会继承旧 `data/app.sqlite` 数据。
 - 数据备份：提供 SQLite 备份脚本。
 
 ## 本地启动
@@ -26,14 +26,13 @@
 node server.js
 ```
 
-带真实 AI、语音和访问口令启动时，通过环境变量传入密钥，不要把密钥写入代码或文档。
+带真实 AI 和语音启动时，可以复制 `.env.example` 为 `.env` 后填写密钥；`server.js` 会自动加载 `.env`。不要把真实密钥提交到仓库。
 
 ```bash
-DEEPSEEK_API_KEY="你的key" \
+AI_API_KEY="你的key" \
 AI_MODEL="deepseek-v4-flash" \
 BAIDU_API_KEY="你的百度API Key" \
 BAIDU_SECRET_KEY="你的百度Secret Key" \
-APP_ACCESS_PASSWORD="内测口令" \
 node server.js
 ```
 
@@ -58,6 +57,7 @@ node --check server.js
 node --check aiService.js
 node --check speechService.js
 node --check app.js
+node --check scripts/backup-sqlite.js
 node scripts/backup-sqlite.js
 ```
 
@@ -77,13 +77,17 @@ node scripts/backup-sqlite.js
 | `DEPLOY.md` | 云服务器、systemd、Caddy、备份部署说明。 |
 | `PROJECT_STATUS.md` | 当前进度、文件整理结果和未完成工作清单。 |
 | `scripts/backup-sqlite.js` | SQLite 备份脚本。 |
-| `data/app.sqlite` | 本地 SQLite 数据库。 |
-| `data/app.sqlite-wal` / `data/app.sqlite-shm` | SQLite WAL 运行时文件。 |
-| `backups/*.sqlite` | 手动或定时备份生成的数据库快照。 |
+| `data/auth.sqlite` | 本地账号认证库，保存邮箱和加盐哈希后的密码。 |
+| `data/users/*.sqlite` | 每个用户独立的业务数据库。 |
+| `data/app.sqlite` | 旧版默认数据库；首个注册用户会继承它。 |
+| `data/*.sqlite-wal` / `data/*.sqlite-shm` | SQLite WAL 运行时文件。 |
+| `backups/snapshot-*` | 手动或定时备份生成的数据库快照目录。 |
 
 ## 数据安全提醒
 
 - API Key 只通过环境变量配置。
-- 不要把 `.env`、`data/*.sqlite`、`backups/` 提交到公开仓库。
+- 不要把 `.env`、`data/*.sqlite`、`data/users/`、`backups/` 提交到公开仓库。
+- 账号密码不会明文保存；认证库仍属于敏感本地数据，需要和业务库一起备份。
+- 服务启动后可访问 `/api/health` 查看账号库、用户库、AI 和语音接口配置状态，响应不会暴露密钥。
 - 真实 AI 模式下，工作记录内容会发送给配置的 AI 服务。
 - 语音后端模式下，录音会先传到本地后端，再发送给配置的 STT 服务。

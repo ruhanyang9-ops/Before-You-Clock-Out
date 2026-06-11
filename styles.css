@@ -75,41 +75,37 @@ button {
 
 .brand-mark {
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 3px;
   width: 50px;
   height: 50px;
   border-radius: var(--radius);
-  background: linear-gradient(145deg, #4f7dff, #8066ff);
-  box-shadow: 0 14px 32px rgba(79, 125, 255, 0.28);
+  background: #14213f;
+  box-shadow: 0 14px 32px rgba(20, 33, 63, 0.18);
+  color: #fff;
+  line-height: 1;
 }
 
-.brand-mark span {
-  display: block;
-  width: 3px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.92);
-  box-shadow: 0 0 12px rgba(255, 255, 255, 0.52);
+.brand-mark strong {
+  font-size: 24px;
+  font-weight: 780;
+  letter-spacing: 0;
 }
 
-.brand-mark span:nth-child(1),
-.brand-mark span:nth-child(4) {
-  height: 15px;
-}
-
-.brand-mark span:nth-child(2) {
-  height: 24px;
-}
-
-.brand-mark span:nth-child(3) {
-  height: 32px;
+.brand-mark small {
+  margin-top: 2px;
+  color: rgba(255, 255, 255, 0.74);
+  font-size: 10px;
+  font-weight: 760;
+  letter-spacing: 0;
+  text-transform: uppercase;
 }
 
 .brand-title {
   margin: 0;
-  font-size: 21px;
-  font-weight: 800;
+  font-size: 20px;
+  font-weight: 780;
 }
 
 .brand-subtitle {
@@ -190,8 +186,21 @@ button {
   font-weight: 850;
 }
 
-.profile-caret {
+.logout-btn {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: rgba(255, 255, 255, 0.54);
   color: #71809d;
+  transition: 160ms ease;
+}
+
+.logout-btn:hover {
+  background: #fff;
+  color: var(--primary-strong);
 }
 
 .profile-name {
@@ -225,9 +234,9 @@ button {
 
 .page-title {
   margin: 0;
-  font-size: 34px;
+  font-size: 32px;
   line-height: 1.18;
-  font-weight: 850;
+  font-weight: 800;
 }
 
 .page-actions {
@@ -301,6 +310,11 @@ button {
 .auth-submit {
   width: 100%;
   margin-top: 16px;
+}
+
+.auth-switch {
+  width: 100%;
+  margin-top: 10px;
 }
 
 .auth-note {
@@ -686,7 +700,6 @@ textarea.voice-active {
 }
 
 .metric-card:hover,
-.quick-actions button:hover,
 .recent-card:hover {
   border-color: rgba(79, 125, 255, 0.18);
 }
@@ -906,45 +919,6 @@ textarea.voice-active {
 
 .dimension-legend strong {
   color: #5f6d89;
-}
-
-.quick-actions {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 10px;
-}
-
-.quick-actions button {
-  display: grid;
-  gap: 10px;
-  justify-items: center;
-  min-height: 92px;
-  padding: 13px 6px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  background: rgba(255, 255, 255, 0.54);
-  color: #4d5c7b;
-  font-size: 13px;
-  font-weight: 760;
-  transition: 160ms ease;
-}
-
-.quick-actions button:hover {
-  transform: translateY(-1px);
-  background: rgba(255, 255, 255, 0.76);
-  box-shadow: var(--soft-shadow);
-  color: var(--primary-strong);
-}
-
-.quick-actions span {
-  display: grid;
-  width: 42px;
-  height: 42px;
-  place-items: center;
-  border-radius: var(--radius);
-  background: linear-gradient(145deg, rgba(128, 102, 255, 0.14), rgba(79, 125, 255, 0.08));
-  color: var(--violet);
-  font-size: 24px;
 }
 
 .item.compact {

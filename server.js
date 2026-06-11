@@ -2,25 +2,52 @@ const http = require("node:http");
 const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
+const { AsyncLocalStorage } = require("node:async_hooks");
 const { DatabaseSync } = require("node:sqlite");
 const aiService = require("./aiService");
 const speechService = require("./speechService");
 
+const ROOT = __dirname;
+loadEnvFile(path.join(ROOT, ".env"));
+
 const PORT = Number(process.env.PORT || 4173);
 const HOST = process.env.HOST || "127.0.0.1";
-const ROOT = __dirname;
-const DATA_DIR = path.join(ROOT, "data");
-const DB_PATH = path.join(DATA_DIR, "app.sqlite");
-const USER_ID = "user_default";
-const ACCESS_PASSWORD = process.env.APP_ACCESS_PASSWORD || "";
+const DATA_DIR = process.env.DATA_DIR ? path.resolve(process.env.DATA_DIR) : path.join(ROOT, "data");
+const LEGACY_DB_PATH = path.join(DATA_DIR, "app.sqlite");
+const AUTH_DB_PATH = path.join(DATA_DIR, "auth.sqlite");
+const USER_DATA_DIR = path.join(DATA_DIR, "users");
+const DEFAULT_USER_ID = "user_default";
 const SESSION_COOKIE = "afm_session";
-const sessions = new Set();
+const sessions = new Map();
+const requestContext = new AsyncLocalStorage();
+const userDatabases = new Map();
+const db = new Proxy({}, {
+  get(_target, prop) {
+    const store = requestContext.getStore();
+    if (!store?.db) throw new Error("No user database is bound to this request");
+    const value = store.db[prop];
+    return typeof value === "function" ? value.bind(store.db) : value;
+  }
+});
 
 fs.mkdirSync(DATA_DIR, { recursive: true });
-const db = new DatabaseSync(DB_PATH);
-db.exec("PRAGMA foreign_keys = ON");
-db.exec("PRAGMA journal_mode = WAL");
-db.exec(`
+fs.mkdirSync(USER_DATA_DIR, { recursive: true });
+const authDb = new DatabaseSync(AUTH_DB_PATH);
+authDb.exec("PRAGMA foreign_keys = ON");
+authDb.exec("PRAGMA journal_mode = WAL");
+authDb.exec(`
+  CREATE TABLE IF NOT EXISTS users (
+    id TEXT PRIMARY KEY,
+    email TEXT NOT NULL UNIQUE,
+    name TEXT NOT NULL,
+    passwordHash TEXT NOT NULL,
+    passwordSalt TEXT NOT NULL,
+    createdAt TEXT NOT NULL,
+    updatedAt TEXT NOT NULL
+  );
+`);
+
+const businessSchema = `
   CREATE TABLE IF NOT EXISTS work_records (
     id TEXT PRIMARY KEY,
     userId TEXT NOT NULL,
@@ -92,10 +119,7 @@ db.exec(`
     createdAt TEXT NOT NULL,
     updatedAt TEXT NOT NULL
   );
-`);
-
-ensureColumn("projects", "startDate", "TEXT");
-ensureColumn("projects", "endDate", "TEXT");
+`;
 
 const jsonFields = [
   "completedItems",
@@ -135,7 +159,8 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, HOST, () => {
   console.log(`下班前五分钟 running at http://${HOST}:${PORT}/`);
-  console.log(`SQLite database: ${DB_PATH}`);
+  console.log(`Auth database: ${AUTH_DB_PATH}`);
+  console.log(`User databases: ${USER_DATA_DIR}`);
 });
 
 async function handleApi(req, res, url) {
@@ -147,16 +172,36 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  if (method === "GET" && url.pathname === "/api/health") {
+    sendJson(res, 200, getHealthStatus());
+    return;
+  }
+
   if (method === "POST" && url.pathname === "/api/auth/login") {
     const body = await readJson(req);
-    if (!isAuthEnabled() || verifyPassword(body.password || "")) {
-      const token = createSession();
-      sendJson(res, 200, { ok: true, authRequired: isAuthEnabled() }, {
+    const user = verifyUserLogin(body.email || "", body.password || "");
+    if (user) {
+      const token = createSession(user.id);
+      sendJson(res, 200, { ok: true, authRequired: true, user: publicUser(user) }, {
         "Set-Cookie": buildSessionCookie(token)
       });
       return;
     }
-    sendJson(res, 401, { error: "访问口令不正确", authRequired: true });
+    sendJson(res, 401, { error: "邮箱或密码不正确", authRequired: true });
+    return;
+  }
+
+  if (method === "POST" && url.pathname === "/api/auth/register") {
+    const body = await readJson(req);
+    const result = createUserAccount(body);
+    if (result.error) {
+      sendJson(res, result.status || 400, { error: result.error, authRequired: true });
+      return;
+    }
+    const token = createSession(result.user.id);
+    sendJson(res, 200, { ok: true, authRequired: true, user: publicUser(result.user) }, {
+      "Set-Cookie": buildSessionCookie(token)
+    });
     return;
   }
 
@@ -169,11 +214,14 @@ async function handleApi(req, res, url) {
     return;
   }
 
-  if (isAuthEnabled() && !isAuthenticated(req)) {
-    sendJson(res, 401, { error: "请先输入内测访问口令", authRequired: true });
+  const user = getSessionUser(req);
+  if (!user) {
+    sendJson(res, 401, { error: "请先登录个人账号", authRequired: true });
     return;
   }
 
+  const userDb = getUserDatabase(user.id);
+  return requestContext.run({ user, db: userDb }, async () => {
   if (method === "GET" && url.pathname === "/api/state") {
     sendJson(res, 200, { ...getState(), meta: { isEmpty: isDatabaseEmpty() } });
     return;
@@ -339,17 +387,13 @@ async function handleApi(req, res, url) {
   }
 
   sendJson(res, 404, { error: "Not found" });
+  });
 }
 
 function getState() {
+  const user = currentUser();
   return {
-    user: {
-      id: USER_ID,
-      name: "职场用户",
-      email: "user@example.com",
-      createdAt: "",
-      updatedAt: ""
-    },
+    user: publicUser(user),
     preferences: getPreference(),
     records: db.prepare("SELECT * FROM work_records ORDER BY date DESC").all().map(recordFromRow),
     tasks: db.prepare("SELECT * FROM tasks ORDER BY dueDate ASC, createdAt DESC").all().map(taskFromRow),
@@ -371,12 +415,12 @@ function isDatabaseEmpty() {
 }
 
 function getPreference() {
-  const row = db.prepare("SELECT * FROM user_preferences WHERE userId = ?").get(USER_ID);
+  const row = db.prepare("SELECT * FROM user_preferences WHERE userId = ?").get(currentUserId());
   if (row) return preferenceFromRow(row);
   const now = nowISO();
   return {
     id: uid("pref"),
-    userId: USER_ID,
+    userId: currentUserId(),
     role: "",
     workGoals: "",
     categoryPreferences: "完成事项、项目进展、风险、明日计划",
@@ -422,7 +466,7 @@ function buildProjectReviewRecord(project) {
   const tasks = state.tasks.filter((task) => task.relatedProjectId === project.id);
   return {
     id: `project_${project.id}`,
-    userId: USER_ID,
+    userId: currentUserId(),
     date: project.endDate || todayISO(),
     rawInput: [
       `项目名称：${project.name}`,
@@ -456,7 +500,7 @@ function upsertRecord(input) {
   const existing = input.date ? db.prepare("SELECT * FROM work_records WHERE date = ?").get(input.date) : null;
   const record = {
     id: existing?.id || input.id || uid("record"),
-    userId: input.userId || USER_ID,
+    userId: input.userId || currentUserId(),
     date: input.date || todayISO(),
     rawInput: input.rawInput || "",
     createdAt: existing?.createdAt || input.createdAt || now,
@@ -503,7 +547,7 @@ function syncTasksFromRecord(record) {
     if (existing) return;
     upsertTask({
       id: uid("task"),
-      userId: USER_ID,
+      userId: currentUserId(),
       title,
       description: "从快速记录自动提取",
       status: "todo",
@@ -520,7 +564,7 @@ function upsertTask(input) {
   const existing = input.id ? db.prepare("SELECT * FROM tasks WHERE id = ?").get(input.id) : null;
   const task = {
     id: input.id || uid("task"),
-    userId: input.userId || USER_ID,
+    userId: input.userId || currentUserId(),
     title: input.title || "",
     description: input.description || "",
     status: normalizeTaskStatus(input.status || "todo"),
@@ -570,7 +614,7 @@ function upsertProject(input) {
       : null;
   const project = {
     id: existing?.id || input.id || uid("project"),
-    userId: input.userId || USER_ID,
+    userId: input.userId || currentUserId(),
     name: input.name || "",
     description: input.description || "",
     status: normalizeProjectStatus(input.status || "active"),
@@ -611,7 +655,7 @@ function upsertSummary(input) {
     : null;
   const summary = {
     id: existing?.id || input.id || uid("summary"),
-    userId: input.userId || USER_ID,
+    userId: input.userId || currentUserId(),
     recordId: input.recordId || "",
     type,
     content: input.content || "",
@@ -630,10 +674,10 @@ function upsertSummary(input) {
 
 function upsertPreference(input) {
   const now = nowISO();
-  const existing = db.prepare("SELECT * FROM user_preferences WHERE userId = ?").get(USER_ID);
+  const existing = db.prepare("SELECT * FROM user_preferences WHERE userId = ?").get(currentUserId());
   const pref = {
     id: existing?.id || input.id || uid("pref"),
-    userId: USER_ID,
+    userId: currentUserId(),
     role: input.role || "",
     workGoals: input.workGoals || "",
     categoryPreferences: input.categoryPreferences || "",
@@ -716,7 +760,7 @@ function buildPeriodRecord(type, anchorDate = todayISO()) {
   if (!records.length) return null;
   const aggregate = {
     id: `period_${type}_${range.start}_${range.end}`,
-    userId: USER_ID,
+    userId: currentUserId(),
     date: range.end,
     rawInput: records.map((record) => `${record.date}：${record.rawInput}`).filter(Boolean).join("\n"),
     createdAt: records[0].createdAt,
@@ -759,7 +803,7 @@ function ensureRelatedProjects(names = []) {
     if (projectIdByName(name)) return;
     upsertProject({
       id: uid("project"),
-      userId: USER_ID,
+      userId: currentUserId(),
       name,
       description: "由快速记录自动识别创建",
       status: "active",
@@ -956,33 +1000,207 @@ function sendJson(res, status, payload, extraHeaders = {}) {
   res.end(JSON.stringify(payload));
 }
 
-function isAuthEnabled() {
-  return Boolean(ACCESS_PASSWORD);
-}
-
-function getAuthStatus(req) {
+function getHealthStatus() {
   return {
-    enabled: isAuthEnabled(),
-    authenticated: !isAuthEnabled() || isAuthenticated(req)
+    ok: true,
+    service: "afterwork-five-minutes",
+    time: nowISO(),
+    auth: {
+      users: authDb.prepare("SELECT COUNT(*) AS count FROM users").get().count
+    },
+    data: {
+      dir: DATA_DIR,
+      authDatabase: AUTH_DB_PATH,
+      userDatabaseDir: USER_DATA_DIR,
+      legacyDatabaseExists: fs.existsSync(LEGACY_DB_PATH)
+    },
+    ai: aiService.getAIStatus(),
+    speech: speechService.getSpeechStatus()
   };
 }
 
-function isAuthenticated(req) {
-  const token = getCookie(req, SESSION_COOKIE);
-  return Boolean(token && sessions.has(token));
+function getAuthStatus(req) {
+  const user = getSessionUser(req);
+  return {
+    enabled: true,
+    authenticated: Boolean(user),
+    user: user ? publicUser(user) : null
+  };
 }
 
-function createSession() {
+function getSessionUser(req) {
+  const token = getCookie(req, SESSION_COOKIE);
+  const userId = token ? sessions.get(token) : "";
+  if (!userId) return null;
+  return getUserById(userId);
+}
+
+function createSession(userId) {
   const token = crypto.randomBytes(32).toString("base64url");
-  sessions.add(token);
+  sessions.set(token, userId);
   return token;
 }
 
-function verifyPassword(input) {
-  const expected = Buffer.from(ACCESS_PASSWORD);
-  const actual = Buffer.from(String(input || ""));
-  if (expected.length !== actual.length) return false;
-  return crypto.timingSafeEqual(expected, actual);
+function createUserAccount(input = {}) {
+  const email = normalizeEmail(input.email);
+  const password = String(input.password || "");
+  const name = normalizeName(input.name, email);
+  if (!email) return { error: "请输入有效邮箱" };
+  if (password.length < 6) return { error: "密码至少需要 6 位" };
+  const existing = getUserByEmail(email);
+  if (existing) return { status: 409, error: "这个邮箱已经注册" };
+
+  const isFirstUser = authDb.prepare("SELECT COUNT(*) AS count FROM users").get().count === 0;
+  const now = nowISO();
+  const id = uid("user");
+  const passwordSalt = crypto.randomBytes(16).toString("hex");
+  const passwordHash = hashPassword(password, passwordSalt);
+  authDb.prepare(`
+    INSERT INTO users (id, email, name, passwordHash, passwordSalt, createdAt, updatedAt)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(id, email, name, passwordHash, passwordSalt, now, now);
+
+  ensureUserDatabase(id, { inheritLegacy: isFirstUser });
+  return { user: getUserById(id) };
+}
+
+function verifyUserLogin(emailInput, passwordInput) {
+  const user = getUserByEmail(emailInput);
+  if (!user) return null;
+  const passwordHash = hashPassword(String(passwordInput || ""), user.passwordSalt);
+  const expected = Buffer.from(user.passwordHash, "hex");
+  const actual = Buffer.from(passwordHash, "hex");
+  if (expected.length !== actual.length || !crypto.timingSafeEqual(expected, actual)) return null;
+  ensureUserDatabase(user.id);
+  return user;
+}
+
+function hashPassword(password, salt) {
+  return crypto.scryptSync(String(password || ""), salt, 64).toString("hex");
+}
+
+function normalizeEmail(email) {
+  const value = String(email || "").trim().toLowerCase();
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value) ? value : "";
+}
+
+function normalizeName(name, email) {
+  const value = String(name || "").trim();
+  if (value) return value.slice(0, 40);
+  return email.split("@")[0].slice(0, 40) || "职场用户";
+}
+
+function getUserByEmail(email) {
+  const normalized = normalizeEmail(email);
+  if (!normalized) return null;
+  return authDb.prepare("SELECT * FROM users WHERE email = ?").get(normalized) || null;
+}
+
+function getUserById(id) {
+  if (!id) return null;
+  return authDb.prepare("SELECT * FROM users WHERE id = ?").get(id) || null;
+}
+
+function publicUser(user) {
+  if (!user) return null;
+  return {
+    id: user.id,
+    name: user.name,
+    email: user.email,
+    createdAt: user.createdAt,
+    updatedAt: user.updatedAt
+  };
+}
+
+function currentUser() {
+  const store = requestContext.getStore();
+  if (!store?.user) throw new Error("No user is bound to this request");
+  return store.user;
+}
+
+function currentUserId() {
+  return currentUser().id;
+}
+
+function getUserDatabase(userId) {
+  ensureUserDatabase(userId);
+  if (userDatabases.has(userId)) return userDatabases.get(userId);
+  const database = new DatabaseSync(userDatabasePath(userId));
+  initializeBusinessDatabase(database);
+  userDatabases.set(userId, database);
+  return database;
+}
+
+function ensureUserDatabase(userId, options = {}) {
+  const target = userDatabasePath(userId);
+  if (!fs.existsSync(target)) {
+    if (options.inheritLegacy && fs.existsSync(LEGACY_DB_PATH)) {
+      checkpointLegacyDatabase();
+      fs.copyFileSync(LEGACY_DB_PATH, target);
+    } else {
+      fs.closeSync(fs.openSync(target, "a"));
+    }
+  }
+  const database = new DatabaseSync(target);
+  initializeBusinessDatabase(database);
+  rewriteDatabaseUserIds(database, userId);
+  database.close();
+}
+
+function initializeBusinessDatabase(database) {
+  database.exec("PRAGMA foreign_keys = ON");
+  database.exec("PRAGMA journal_mode = WAL");
+  database.exec(businessSchema);
+  ensureColumnOn(database, "projects", "startDate", "TEXT");
+  ensureColumnOn(database, "projects", "endDate", "TEXT");
+}
+
+function checkpointLegacyDatabase() {
+  const legacy = new DatabaseSync(LEGACY_DB_PATH);
+  legacy.exec("PRAGMA wal_checkpoint(FULL)");
+  legacy.close();
+}
+
+function ensureColumnOn(database, table, column, definition) {
+  const columns = database.prepare(`PRAGMA table_info(${table})`).all().map((item) => item.name);
+  if (!columns.includes(column)) {
+    database.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  }
+}
+
+function rewriteDatabaseUserIds(database, userId) {
+  ["work_records", "tasks", "projects", "summaries", "user_preferences"].forEach((table) => {
+    database.prepare(`UPDATE ${table} SET userId = ? WHERE userId = ? OR userId = '' OR userId IS NULL`).run(userId, DEFAULT_USER_ID);
+  });
+}
+
+function userDatabasePath(userId) {
+  if (!/^user_[a-z0-9_]+$/i.test(userId)) throw new Error("Invalid user id");
+  return path.join(USER_DATA_DIR, `${userId}.sqlite`);
+}
+
+function loadEnvFile(filePath) {
+  if (!fs.existsSync(filePath)) return;
+  const lines = fs.readFileSync(filePath, "utf8").split(/\r?\n/);
+  lines.forEach((line) => {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) return;
+    const match = trimmed.match(/^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/);
+    if (!match) return;
+    const [, key, rawValue] = match;
+    if (process.env[key] !== undefined) return;
+    process.env[key] = parseEnvValue(rawValue);
+  });
+}
+
+function parseEnvValue(value) {
+  let output = String(value || "").trim();
+  const commentIndex = output.search(/\s#/);
+  if (commentIndex >= 0) output = output.slice(0, commentIndex).trim();
+  if ((output.startsWith('"') && output.endsWith('"')) || (output.startsWith("'") && output.endsWith("'"))) {
+    output = output.slice(1, -1);
+  }
+  return output.replace(/\\n/g, "\n");
 }
 
 function getCookie(req, name) {

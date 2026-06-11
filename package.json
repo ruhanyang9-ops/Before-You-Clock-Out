@@ -9,7 +9,7 @@
   },
   "scripts": {
     "start": "node server.js",
-    "check": "node --check server.js && node --check aiService.js && node --check speechService.js && node --check app.js",
+    "check": "node --check server.js && node --check aiService.js && node --check speechService.js && node --check app.js && node --check scripts/backup-sqlite.js",
     "backup": "node scripts/backup-sqlite.js"
   }
 }

@@ -44,6 +44,7 @@ let aiStatus = null;
 let speechStatus = null;
 let authRequired = false;
 let authChecked = false;
+let authMode = "login";
 let voiceSession = null;
 
 window.addEventListener("hashchange", render);
@@ -85,6 +86,11 @@ function shortDate(dateString) {
   return `${Number(month)}/${Number(day)}`;
 }
 
+function profileInitial() {
+  const source = state.user.name || state.user.email || "用";
+  return source.trim().slice(0, 1).toUpperCase();
+}
+
 function currentRoute() {
   const id = location.hash.replace("#", "");
   return routes.some((route) => route.id === id) ? id : "dashboard";
@@ -98,13 +104,7 @@ async function initApp() {
       return;
     }
     const remote = await apiGet("/state");
-    if (remote.meta?.isEmpty) {
-      const legacy = readLegacyState() || createInitialState();
-      const imported = await apiPost("/import-state", { state: legacy });
-      applyRemoteState(imported);
-    } else {
-      applyRemoteState(remote);
-    }
+    applyRemoteState(remote);
   } catch (error) {
     console.error(error);
     if (error.status === 401 || error.authRequired) {
@@ -114,8 +114,8 @@ async function initApp() {
       return;
     }
     apiAvailable = false;
-    showToast("本地 API 暂不可用，已临时使用浏览器本地数据。");
-    state = readLegacyState() || createInitialState();
+    showToast("本地 API 暂不可用，请确认 node server.js 正在运行。");
+    state = createInitialState();
   }
   if (apiAvailable) {
     await refreshAIStatus(false);
@@ -127,7 +127,8 @@ async function initApp() {
 async function ensureAuth() {
   const status = await apiGet("/auth/status");
   authChecked = true;
-  authRequired = status.enabled && !status.authenticated;
+  authRequired = !status.authenticated;
+  if (status.user) state.user = status.user;
   return status;
 }
 
@@ -205,7 +206,7 @@ async function parseApiResponse(response) {
 }
 
 async function withApiFallback(request, fallback) {
-  if (!apiAvailable) return fallback();
+  if (!apiAvailable) throw new Error("本地 API 暂不可用，请确认服务已启动。");
   try {
     return await request();
   } catch (error) {
@@ -214,9 +215,7 @@ async function withApiFallback(request, fallback) {
       render();
       throw error;
     }
-    console.warn(error);
-    apiAvailable = false;
-    return fallback();
+    throw error;
   }
 }
 
@@ -453,7 +452,7 @@ function createInitialState() {
     ui: {
       selectedProjectId: projectA,
       editProjectId: "",
-      taskFilterStatus: "全部",
+      taskFilterStatus: "未开始",
       taskFilterPriority: "全部",
       taskFilterDate: "全部",
       historyDate: today,
@@ -477,11 +476,11 @@ function render() {
       <aside class="sidebar">
         <div class="brand">
           <div class="brand-mark" aria-hidden="true">
-            <span></span><span></span><span></span><span></span>
+            <strong>5</strong><small>min</small>
           </div>
           <div>
             <h1 class="brand-title">下班前五分钟</h1>
-            <p class="brand-subtitle">Work Summary Cockpit</p>
+            <p class="brand-subtitle">Personal Work Log</p>
           </div>
         </div>
         <nav class="nav">
@@ -497,12 +496,12 @@ function render() {
             .join("")}
         </nav>
         <div class="sidebar-footer">
-          <div class="avatar">${escapeHtml(state.user.name.slice(0, 1) || "用")}</div>
+          <div class="avatar">${escapeHtml(profileInitial())}</div>
           <div>
             <p class="profile-name">${escapeHtml(state.user.name)}</p>
-            <p class="profile-role">${escapeHtml(state.preferences.role || "通用工作记录")}</p>
+            <p class="profile-role">${escapeHtml(state.user.email || state.preferences.role || "个人数据库")}</p>
           </div>
-          <span class="profile-caret">⌄</span>
+          <button class="logout-btn" id="logout" title="退出登录" aria-label="退出登录">↗</button>
         </div>
       </aside>
       <main class="main">${renderPage(route)}</main>
@@ -513,26 +512,38 @@ function render() {
 }
 
 function renderAuthGate() {
+  const isRegister = authMode === "register";
   return `
     <main class="auth-screen">
       <section class="auth-card">
         <div class="brand auth-brand">
           <div class="brand-mark" aria-hidden="true">
-            <span></span><span></span><span></span><span></span>
+            <strong>5</strong><small>min</small>
           </div>
           <div>
             <h1 class="brand-title">下班前五分钟</h1>
-            <p class="brand-subtitle">内测访问</p>
+            <p class="brand-subtitle">个人工作数据库</p>
           </div>
         </div>
-        <h2>输入访问口令</h2>
-        <p>当前站点已开启少量内测保护。口令只用于进入应用，不会作为用户账号保存。</p>
+        <h2>${isRegister ? "创建个人账号" : "登录个人账号"}</h2>
+        <p>${isRegister ? "首次注册会为你创建独立 SQLite 数据库；第一个账号会继承当前已有数据。" : "登录后只会读取你的个人数据库，工作记录、待办和项目相互隔离。"}</p>
+        ${isRegister ? `
+          <div class="field">
+            <label for="auth-name">显示名称</label>
+            <input id="auth-name" autocomplete="name" placeholder="例如：茹涵" />
+          </div>
+        ` : ""}
         <div class="field">
-          <label for="access-password">访问口令</label>
-          <input id="access-password" type="password" autocomplete="current-password" placeholder="请输入内测口令" />
+          <label for="auth-email">邮箱</label>
+          <input id="auth-email" type="email" autocomplete="email" placeholder="you@example.com" />
         </div>
-        <button class="btn primary auth-submit" id="auth-submit">进入应用</button>
-        <p class="auth-note">如需配置口令，请在服务端设置 <strong>APP_ACCESS_PASSWORD</strong> 环境变量。</p>
+        <div class="field">
+          <label for="auth-password">密码</label>
+          <input id="auth-password" type="password" autocomplete="${isRegister ? "new-password" : "current-password"}" placeholder="至少 6 位" />
+        </div>
+        <button class="btn primary auth-submit" id="auth-submit">${isRegister ? "注册并进入" : "登录"}</button>
+        <button class="btn ghost auth-switch" id="auth-switch">${isRegister ? "已有账号，去登录" : "还没有账号，创建一个"}</button>
+        <p class="auth-note">账号密码只保存在本机服务端，密码会加盐哈希后写入认证数据库。</p>
       </section>
     </main>
   `;
@@ -541,25 +552,44 @@ function renderAuthGate() {
 function bindAuthGate() {
   const submit = () => {
     handleAsync(async () => {
-      const password = document.getElementById("access-password").value;
-      if (!password) return showToast("请输入访问口令。");
-      await apiPost("/auth/login", { password });
+      const email = document.getElementById("auth-email").value.trim();
+      const password = document.getElementById("auth-password").value;
+      const name = document.getElementById("auth-name")?.value.trim() || "";
+      if (!email) return showToast("请输入邮箱。");
+      if (!password) return showToast("请输入密码。");
+      const payload = await apiPost(authMode === "register" ? "/auth/register" : "/auth/login", { email, password, name });
+      if (payload.user) state.user = payload.user;
       authRequired = false;
       await initApp();
-      showToast("已进入内测环境。");
+      showToast(authMode === "register" ? "个人账号已创建。" : "已登录个人账号。");
     });
   };
-  document.getElementById("auth-submit")?.addEventListener("click", submit);
-  document.getElementById("access-password")?.addEventListener("keydown", (event) => {
-    if (event.key === "Enter") submit();
+  document.getElementById("auth-switch")?.addEventListener("click", () => {
+    authMode = authMode === "register" ? "login" : "register";
+    render();
   });
-  setTimeout(() => document.getElementById("access-password")?.focus(), 0);
+  document.getElementById("auth-submit")?.addEventListener("click", submit);
+  ["auth-name", "auth-email", "auth-password"].forEach((id) => {
+    document.getElementById(id)?.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") submit();
+    });
+  });
+  setTimeout(() => document.getElementById(authMode === "register" ? "auth-name" : "auth-email")?.focus(), 0);
 }
 
 function bindCommon() {
   document.querySelectorAll("[data-route]").forEach((button) => {
     button.addEventListener("click", () => {
       location.hash = button.dataset.route;
+    });
+  });
+  document.getElementById("logout")?.addEventListener("click", () => {
+    handleAsync(async () => {
+      await apiPost("/auth/logout", {});
+      authRequired = true;
+      authMode = "login";
+      render();
+      showToast("已退出登录。");
     });
   });
 }
@@ -683,19 +713,6 @@ function renderDashboard() {
               <h3 class="section-title">工作维度分布</h3>
             </div>
             ${renderDimensionDistribution(dimensions)}
-          </div>
-        </section>
-        <section class="panel">
-          <div class="panel-inner">
-            <div class="section-head">
-              <h3 class="section-title">快捷操作</h3>
-            </div>
-            <div class="quick-actions">
-              <button data-quick-summary="weekly"><span>▤</span>生成周报</button>
-              <button data-quick-summary="monthly"><span>□</span>生成月报</button>
-              <button data-route="tasks"><span>✓</span>管理待办</button>
-              <button data-route="history"><span>◷</span>复盘洞察</button>
-            </div>
           </div>
         </section>
       </aside>
@@ -1414,20 +1431,6 @@ function bindPage(route) {
 }
 
 function bindDashboard() {
-  document.querySelectorAll("[data-quick-summary]").forEach((button) => {
-    button.addEventListener("click", () => {
-      handleAsync(async () => {
-        if (!state.records.length) return showToast("还没有可生成报告的记录。");
-        state.ui.summaryType = button.dataset.quickSummary;
-        const targetId = summaryTargetRecordId(state.ui.summaryType);
-        const generated = await generateSummaryDraft(targetId, state.ui.summaryType);
-        summaryDraft = { recordId: generated.recordId || targetId, type: state.ui.summaryType, content: generated.content };
-        notifyAIMode(generated._meta);
-        saveState();
-        location.hash = "summary";
-      });
-    });
-  });
   document.querySelectorAll("[data-open-record]").forEach((button) => {
     button.addEventListener("click", () => {
       state.ui.historyDate = button.dataset.openRecord;
@@ -1613,7 +1616,7 @@ function bindTasks() {
     render();
   });
   document.getElementById("clear-task-filter")?.addEventListener("click", () => {
-    state.ui.taskFilterStatus = "全部";
+    state.ui.taskFilterStatus = "未开始";
     state.ui.taskFilterPriority = "全部";
     state.ui.taskFilterDate = "全部";
     saveState();
