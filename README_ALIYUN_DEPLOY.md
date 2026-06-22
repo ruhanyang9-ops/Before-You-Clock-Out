@@ -2,6 +2,8 @@
 
 本项目适合用 Nginx + PM2 部署：Nginx 对公网提供 HTTP/HTTPS，PM2 在本机运行 Node 服务，SQLite 数据保存在 ECS 本地磁盘。
 
+当前生产地址：`https://afterwork5.xyz/`
+
 ## 1. ECS 建议
 
 - 系统：Ubuntu 22.04 LTS 或 Ubuntu 24.04 LTS
